@@ -1,4 +1,4 @@
-export const CONFIG: Config = require('config.json');
+export const CONFIG: Config = require('../config.json');
 
 export declare type Config = {
     "DESTINY": {

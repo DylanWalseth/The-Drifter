@@ -1,7 +1,7 @@
 import Traveler from 'the-traveler';
 import { BungieMembershipType } from 'the-traveler/build/type-definitions/app';
 import { DestinyComponentType } from 'the-traveler/build/type-definitions/destiny2';
-import { CONFIG } from '../../config';
+import { CONFIG } from '../config';
 
 const awkewainzeId = "4611686018468627048";
 const traveler = new Traveler({

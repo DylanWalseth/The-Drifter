@@ -1,3 +1,5 @@
+require('source-map-support').install();
+
 import {Client as DiscordClient, TextChannel, VoiceChannel, VoiceConnection} from 'discord.js';
 import {promisify} from 'util';
 import {createClient, RedisClient} from 'redis';
@@ -5,7 +7,7 @@ import {checkToxicity, Attribute} from "./external-services/perspective-api";
 import moment from 'moment';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CONFIG } from '../config';
+import { CONFIG } from './config';
 import { randInt, selectRandom } from './utils/math-utils';
 import { main } from './external-services/destiny-api';
 

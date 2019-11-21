@@ -1,5 +1,5 @@
 import Axios from 'axios';
-import { CONFIG } from '../../config';
+import { CONFIG } from '../config';
 
 const URL = `https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze?key=${CONFIG.GOOGLE_CLOUD.API_KEY}`;
 export async function checkToxicity(message: string): Promise<ToxicityResponse> {
