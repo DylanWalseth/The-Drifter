@@ -1,9 +1,11 @@
 require('source-map-support').install();
 
-import {Client as DiscordClient, TextChannel, VoiceChannel, VoiceConnection, GuildMember} from 'discord.js';
+import {Client as DiscordClient, TextChannel, VoiceChannel, VoiceConnection, GuildMember, DMChannel, MessageEmbed} from 'discord.js';
 import {promisify} from 'util';
 import {createClient, RedisClient} from 'redis';
 import {checkToxicity, Attribute} from "./external-services/perspective-api";
+import { lookupItemPrice, lookupItemPriceFast } from './external-services/tarkov-price-api';
+import { lookupAmmoData, Ammo, lookupAmmoDataSpecific, BlankAmmo } from './external-services/tarkov-ammo-api';
 import moment from 'moment';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,7 +13,10 @@ import { CONFIG } from './config';
 import { randInt, selectRandom } from './utils/math-utils';
 import { main } from './external-services/destiny-api';
 import { Stream, Duplex } from 'stream';
+import { table, TableUserConfig } from 'table';
+import { Parser } from 'expr-eval';
 
+const parser = new Parser();
 const redisClientPrebinded: RedisClient = createClient();
 const getAsync: (key: string) => Promise<string> = promisify(redisClientPrebinded.get).bind(redisClientPrebinded);
 const setAsync: (key: string, value: string) => Promise<void> = promisify(redisClientPrebinded.set).bind(redisClientPrebinded);
@@ -19,10 +24,21 @@ const redisClient: RedisClient & {getAsync: (key: string) => Promise<string>, se
 
 const soundsDir = path.join(__dirname, "..", "sounds", "memes");
 const drifterSoundsDir = path.join(__dirname, "..", "sounds", "drifter-lines");
+const dingFolder = path.join(drifterSoundsDir, "drifter-special", "ding-individual");
 const armyOfOneSoundsDir = path.join(__dirname, "..", "sounds", "army-of-one");
 const client = new DiscordClient();
 client.on('ready', async () => {
     console.log("Online");
+    client.user.setPresence({
+        status: "online",
+        activity: {
+            name: "Gambit and Chill",
+            type: "WATCHING",
+            url: "https://github.com/DylanWalseth/The-Drifter"
+        }
+    });
+
+    // client.user.setAvatar(path.join(__dirname, "..", "images", "gnome_child.png"));
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
@@ -77,6 +93,25 @@ async function playRandomVillagerSoundsForever(connection: VoiceConnection, guil
     });
 }
 
+async function playDingForever(connection: VoiceConnection, guildId: string): Promise<void> {
+    let stream = connection.play(await getRandomFileFromDir(dingFolder), {
+        volume: .4
+    });
+    stream.once('end', () => {
+        setTimeout(() => {
+            if (!guildDingStatusEnabled[guildId]) return;
+            playDingForever(connection, guildId);
+        }, 250);
+    });
+}
+
+const cockneyDir = path.join(__dirname, "..", "sounds", "cockney");
+async function playCockneyLewdSound(connection: VoiceConnection): Promise<void> {
+    let stream = connection.play(await getRandomFileFromDir(cockneyDir), {
+        volume: .4
+    });
+}
+
 async function getOrCreateConnectionForGuild(guildId: string, channelToUseIfNotInExisting: VoiceChannel): Promise<VoiceConnection> {
     if (!guildConnectionMap[guildId]) {
         guildConnectionMap[guildId] = await channelToUseIfNotInExisting.join();
@@ -113,7 +148,172 @@ async function amIIncludedInRaidChecks(player: GuildMember): Promise<{includeMe:
 
 let guildConnectionMap: {[id: string]: VoiceConnection} = {};
 let guildVillagerStatusEnabled: {[id: string]: boolean} = {};
+let guildDingStatusEnabled: {[id: string]: boolean} = {};
+
+const fullConfig: TableUserConfig = {
+    columnCount: 9,
+    columns: {
+        0: {
+            width: 10,
+            wrapWord: true
+        },
+        1 : {
+            width: 10
+        },
+        2: { 
+            width: 3
+        },
+        3: {
+            width: 1
+        },
+        4: {
+            width: 1
+        },
+        5: {
+            width: 1
+        },
+        6: {
+            width: 1
+        },
+        7: {
+            width: 1
+        },
+        8: {
+            width: 1
+        }
+    }
+}
+
+const priceConfig: TableUserConfig = {
+    columnDefault: {
+        width: 12,
+        wrapWord: true
+    },
+    columnCount: 3
+}
+
+const ammoConfig: TableUserConfig = {
+    columnCount: 8,
+    columns: {
+        0: {
+            width: 20,
+            wrapWord: true
+        },
+        1: { 
+            width: 3
+        },
+        2: {
+            width: 1
+        },
+        3: {
+            width: 1
+        },
+        4: {
+            width: 1
+        },
+        5: {
+            width: 1
+        },
+        6: {
+            width: 1
+        },
+        7: {
+            width: 1
+        }
+    }
+}
+
+function getTableSafe(tableData: (string | number)[][], tableConfig: TableUserConfig): string {
+    let text = `\`\`\`${table(tableData, tableConfig)}\`\`\``;
+    if (text.length > 2048) {
+        tableData.pop();
+        text = getTableSafe(tableData, tableConfig);
+    }
+    return text;
+}
+
 client.on('message', async message => {
+    if (message.author.bot) return;
+    // TODO: OPTIMIZE
+    if (message.channel.type === "dm" && message.content && message.content.trim() !== "" && message) {
+        if (/^\$tp /i.test(message.content)) {
+            const query = /^\$tp (?<query>.+)$/i.exec(message.content).groups.query;
+            const priceData = await lookupItemPrice(query);
+            let priceTable = priceData.map(x => {
+                return [x.title, x.price_avg, x.category]
+            });
+            let response = new MessageEmbed();
+            response.setTitle("Lookup for: " + query);
+            response.setColor(0xCF40FA);
+            priceTable.unshift(["Name", "Price", "Category"]);
+            response.setDescription(getTableSafe(priceTable, priceConfig));
+            message.reply(response);
+            console.log("Done");
+            return;
+        }
+    
+        if (/^\$tpq /i.test(message.content)) {
+            const query = /^\$tpq (?<query>.+)$/i.exec(message.content).groups.query;
+            const priceData = await lookupItemPriceFast(query);
+            let priceTable = priceData.map(x => {
+                return [x.title, x.price_avg, x.category]
+            });
+            let response = new MessageEmbed();
+            response.setTitle("Lookup for: " + query);
+            response.setColor(0xCF40FA);
+            priceTable.unshift(["Name", "Price", "Category"]);
+            response.setDescription(getTableSafe(priceTable, priceConfig));
+            message.reply(response);
+            console.log("Done");
+            return;
+        }
+
+        if (/^\$ta /i.test(message.content)) {
+            const query = /^\$ta (?<query>.+)$/i.exec(message.content).groups.query;
+            const ammoData = await lookupAmmoData(query);
+            let ammoTable = ammoData.map(x => {
+                return [x["Ammo Type"], x.Damage, x["Class 1"], x["Class 2"], x["Class 3"], x["Class 4"], x["Class 5"], x["Class 6"]]
+            });
+            let response = new MessageEmbed();
+            response.setTitle("Lookup for: " + query);
+            response.setColor(0xCF40FA);
+            ammoTable.unshift(["Ammo Type", "Dmg", "1", "2", "3", "4", "5", "6"]);
+            response.setDescription(getTableSafe(ammoTable, ammoConfig));
+            message.reply(response);
+            return;
+        }
+
+        if (/^\$c /i.test(message.content)) {
+            try {
+                const expression = /^\$c (?<expression>.+)$/i.exec(message.content).groups.expression;
+                message.reply(parser.evaluate(expression));
+            } catch {
+                message.reply("Unable to evaluate provided expression");
+            }
+            console.log("Done");
+            return;
+        }
+
+        const query = message.content;
+        const priceData = await lookupItemPrice(query);
+        let fullTablePromises = priceData.map(async p => {
+            const ammoData = await lookupAmmoDataSpecific(p.title);
+            let x = BlankAmmo;
+            if (ammoData.length > 0) x = ammoData[0];
+            return [p.title, p.price_avg, x.Damage, x["Class 1"], x["Class 2"], x["Class 3"], x["Class 4"], x["Class 5"], x["Class 6"]]
+        });
+        let fullTable = await Promise.all(fullTablePromises);
+        let response = new MessageEmbed();
+        response.setTitle("Lookup for: " + query);
+        response.setColor(0xCF40FA);
+        fullTable.unshift(["Name", "Price", "Dmg", "1", "2", "3", "4", "5", "6"]);
+        response.setDescription(getTableSafe(fullTable, fullConfig));
+        message.reply(response);
+        console.log("Done");
+        return;
+    }
+    
+
     if(/\$setchannel/i.test(message.content)) {
         let guild = (message.channel as TextChannel).guild;
         if(!guild) return;
@@ -121,8 +321,29 @@ client.on('message', async message => {
         await message.channel.send("Channel set as trash bin!");
         return;
     }
+    if (message.channel.type === "dm") {
+        const channel = message.channel as DMChannel;
+        // if (channel.recipient.id === "181223459202924556") {
+        //     // interface PresenceData {
+        //     //     status?: PresenceStatusData;
+        //     //     afk?: boolean;
+        //     //     activity?: {
+        //     //         name?: string;
+        //     //         type?: ActivityType | number;
+        //     //         url?: string;
+        //     //     };
+        //     //     shardID?: number | number[];
+        //     // }
+            
+        // }
+        return;
+    }
+    
     const textChannelId = await redisClient.getAsync(message.guild.id);
     if (message.channel.id === textChannelId && !message.member.user.bot) {
+        if (message.member.user.id === "163853794113748992") { // IsBAirborne
+            await message.channel.send("You seem the type...");
+        }
         if (/drifter/i.test(message.content)) {
             const tox = await checkToxicity(message.content);
             if (tox.attributeScores) {
@@ -173,6 +394,10 @@ client.on('message', async message => {
         //     }
         // }
 
+        if(/\$(crc)|(check-raid-check)/i.test(message.content)) {
+            await message.channel.send(`${message.member.displayName} is ${await amIIncludedInRaidChecks(message.member) ? "included": "not included"} in raid checks`);
+        }
+
         if(/\$(drc)|(disable-raid-check)/i.test(message.content)) {
             await doNotAllowMeToBeRaidChecked(message.member);
             await message.channel.send(`${message.member.displayName} is now removed from raid checks`);
@@ -210,10 +435,46 @@ client.on('message', async message => {
             }
         }
 
+        if (/\$ding/i.test(message.content)) {
+            let userChannel = message.member.voice.channel;
+            let connection: VoiceConnection;
+            if (!userChannel && !guildConnectionMap[message.guild.id]) return;
+            connection = await getOrCreateConnectionForGuild(message.guild.id, userChannel);
+            if (!connection) return;
+            if (/stop/i.test(message.content)) {
+                guildDingStatusEnabled[message.guild.id] = false;
+            }
+            if (/start/i.test(message.content) && !guildDingStatusEnabled[message.guild.id]) {
+                guildDingStatusEnabled[message.guild.id] = true;
+                playDingForever(connection, message.guild.id);
+            }
+        }
+
         if (/\$meme/i.test(message.content)) {
             let userChannel = message.member.voice.channel;
             if(userChannel) {
                 let audioFileToPlay = await getRandomFileFromDir(soundsDir);
+                let connection = await getOrCreateConnectionForGuild(message.guild.id, userChannel);
+                let stream = connection.play(audioFileToPlay, {
+                    volume: .4
+                });
+                return;
+            }
+        }
+
+        if (/\$cockney/i.test(message.content)) {
+            let userChannel = message.member.voice.channel;
+            if(userChannel) {
+                let connection = await getOrCreateConnectionForGuild(message.guild.id, userChannel);
+                await playCockneyLewdSound(connection);
+                return;
+            }
+        }
+
+        if (/\$succ/i.test(message.content)) {
+            let userChannel = message.member.voice.channel;
+            if(userChannel) {
+                let audioFileToPlay = path.join(soundsDir, "succ.mp3");
                 let connection = await getOrCreateConnectionForGuild(message.guild.id, userChannel);
                 let stream = connection.play(audioFileToPlay, {
                     volume: .4
